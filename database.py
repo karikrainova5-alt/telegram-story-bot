@@ -1,0 +1,114 @@
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime
+
+DB_PATH = "bot.db"
+
+
+def init_db():
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS accounts (
+            telegram_id     INTEGER PRIMARY KEY,
+            ig_user_id      TEXT NOT NULL,
+            access_token    TEXT NOT NULL,
+            ig_username     TEXT,
+            connected_at    TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS scheduled_posts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id     INTEGER NOT NULL,
+            media_type      TEXT NOT NULL,   -- photo / video / carousel
+            media_urls      TEXT NOT NULL,   -- JSON-список URL
+            caption         TEXT,
+            publish_at      TEXT NOT NULL,   -- ISO datetime, UTC
+            status          TEXT NOT NULL DEFAULT 'pending', -- pending/done/error
+            error_message   TEXT,
+            created_at      TEXT NOT NULL
+        );
+        """)
+
+
+@contextmanager
+def get_conn():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def save_account(telegram_id: int, ig_user_id: str, access_token: str, ig_username: str):
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO accounts (telegram_id, ig_user_id, access_token, ig_username, connected_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET
+                ig_user_id=excluded.ig_user_id,
+                access_token=excluded.access_token,
+                ig_username=excluded.ig_username,
+                connected_at=excluded.connected_at
+        """, (telegram_id, ig_user_id, access_token, ig_username, datetime.utcnow().isoformat()))
+
+
+def get_account(telegram_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM accounts WHERE telegram_id=?", (telegram_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def delete_account(telegram_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM accounts WHERE telegram_id=?", (telegram_id,))
+
+
+def add_scheduled_post(telegram_id: int, media_type: str, media_urls_json: str,
+                        caption: str, publish_at_iso: str) -> int:
+    with get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO scheduled_posts
+                (telegram_id, media_type, media_urls, caption, publish_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (telegram_id, media_type, media_urls_json, caption, publish_at_iso,
+              datetime.utcnow().isoformat()))
+        return cur.lastrowid
+
+
+def get_due_posts(now_iso: str):
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT * FROM scheduled_posts
+            WHERE status='pending' AND publish_at<=?
+        """, (now_iso,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def mark_post_done(post_id: int):
+    with get_conn() as conn:
+        conn.execute("UPDATE scheduled_posts SET status='done' WHERE id=?", (post_id,))
+
+
+def mark_post_error(post_id: int, message: str):
+    with get_conn() as conn:
+        conn.execute("""
+            UPDATE scheduled_posts SET status='error', error_message=? WHERE id=?
+        """, (message, post_id))
+
+
+def get_user_posts(telegram_id: int):
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT * FROM scheduled_posts WHERE telegram_id=? ORDER BY publish_at DESC LIMIT 20
+        """, (telegram_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+def cancel_post(post_id: int, telegram_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute("""
+            DELETE FROM scheduled_posts WHERE id=? AND telegram_id=? AND status='pending'
+        """, (post_id, telegram_id))
+        return cur.rowcount > 0
