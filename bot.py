@@ -275,7 +275,7 @@ async def cmd_newpost(message: Message, state: FSMContext):
         )
         return
 
-    await state.update_data(media_urls=[], media_type=None)
+    await state.update_data(media_file_ids=[], media_type=None)
     await message.answer(
         "Пришли фото или видео для поста.\n"
         "Можно прислать несколько фото подряд — соберу карусель.\n"
@@ -285,31 +285,37 @@ async def cmd_newpost(message: Message, state: FSMContext):
 
 
 async def _file_public_url(file_id: str) -> str:
+    """Возвращает свежую публичную ссылку на файл прямо перед публикацией.
+
+    Ссылки Telegram на файлы временные и могут истечь, поэтому мы не сохраняем
+    их заранее — только file_id, а URL получаем непосредственно перед вызовом
+    Instagram Graph API.
+    """
     file = await bot.get_file(file_id)
     return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
 
 @router.message(NewPostState.waiting_media, F.photo)
 async def newpost_add_photo(message: Message, state: FSMContext):
-    url = await _file_public_url(message.photo[-1].file_id)
+    file_id = message.photo[-1].file_id
     data = await state.get_data()
-    urls = data.get("media_urls", [])
-    urls.append(url)
-    await state.update_data(media_urls=urls, media_type="photo" if len(urls) == 1 else "carousel")
-    await message.answer(f"Добавлено фото ({len(urls)}). Ещё фото или /done.")
+    file_ids = data.get("media_file_ids", [])
+    file_ids.append(file_id)
+    await state.update_data(media_file_ids=file_ids, media_type="photo" if len(file_ids) == 1 else "carousel")
+    await message.answer(f"Добавлено фото ({len(file_ids)}). Ещё фото или /done.")
 
 
 @router.message(NewPostState.waiting_media, F.video)
 async def newpost_add_video(message: Message, state: FSMContext):
-    url = await _file_public_url(message.video.file_id)
-    await state.update_data(media_urls=[url], media_type="video")
+    file_id = message.video.file_id
+    await state.update_data(media_file_ids=[file_id], media_type="video")
     await message.answer("Видео добавлено. Напиши /done чтобы продолжить.")
 
 
 @router.message(NewPostState.waiting_media, Command("done"))
 async def newpost_media_done(message: Message, state: FSMContext):
     data = await state.get_data()
-    if not data.get("media_urls"):
+    if not data.get("media_file_ids"):
         await message.answer("Ты не прислал ни одного медиафайла.")
         return
     await message.answer("Теперь пришли подпись (caption) к посту, или /skip чтобы оставить пустой.")
@@ -342,7 +348,8 @@ async def newpost_now(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await callback.message.edit_text("Публикую...")
     try:
-        await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""))
+        media_urls = [await _file_public_url(fid) for fid in data["media_file_ids"]]
+        await _do_publish(callback.from_user.id, data["media_type"], media_urls, data.get("caption", ""))
     except Exception as e:
         await callback.message.answer(f"❌ Не удалось опубликовать: {e}")
         await state.clear()
@@ -397,7 +404,8 @@ async def newpost_datetime(message: Message, state: FSMContext):
     post_id = db.add_scheduled_post(
         telegram_id=message.from_user.id,
         media_type=data["media_type"],
-        media_urls_json=json.dumps(data["media_urls"]),
+        media_urls_json=json.dumps([]),
+        media_file_ids_json=json.dumps(data["media_file_ids"]),
         caption=data.get("caption", ""),
         publish_at_iso=dt_utc.isoformat(),
     )
@@ -466,12 +474,29 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
 
 
 async def check_scheduled_posts():
-    """Фоновая задача: раз в 30 секунд проверяет, что пора публиковать."""
+    """Фоновая задача: раз в 30 секунд проверяет, что пора публиковать.
+
+    Публичные ссылки на файлы Telegram временные и истекают, поэтому мы храним
+    только file_id и запрашиваем свежую ссылку через bot.get_file() непосредственно
+    перед публикацией в Instagram.
+    """
     now_iso = datetime.utcnow().isoformat()
     due = db.get_due_posts(now_iso)
     for post in due:
         try:
-            media_urls = json.loads(post["media_urls"])
+            file_ids_raw = post.get("media_file_ids")
+            if file_ids_raw:
+                file_ids = json.loads(file_ids_raw)
+                try:
+                    media_urls = [await _file_public_url(fid) for fid in file_ids]
+                except Exception as e:
+                    raise InstagramAPIError(
+                        f"Не удалось получить файл из Telegram (возможно, истёк): {e}"
+                    )
+            else:
+                # Обратная совместимость со старыми записями, сохранёнными по URL.
+                media_urls = json.loads(post["media_urls"])
+
             await _do_publish(post["telegram_id"], post["media_type"], media_urls, post["caption"])
             db.mark_post_done(post["id"])
             await bot.send_message(post["telegram_id"], f"✅ Пост #{post['id']} опубликован в Instagram.")
@@ -487,10 +512,58 @@ async def check_scheduled_posts():
 # ---------------------------------------------------------------------------
 # Запуск
 # ---------------------------------------------------------------------------
+LOCK_FILE_PATH = os.getenv("SCHEDULER_LOCK_FILE", "/tmp/postpilot_scheduler.lock")
+
+
+def _acquire_scheduler_lock() -> bool:
+    """Гарантирует, что фоновый планировщик запускается только в одном экземпляре.
+
+    Если явно задана переменная окружения RUN_SCHEDULER=0, планировщик отключается
+    для этого процесса (например, при запуске нескольких воркеров одного бота).
+    Дополнительно используется файловый лок на основе PID, чтобы не плодить
+    параллельные polling/scheduler инстансы на одной машине.
+    """
+    if os.getenv("RUN_SCHEDULER", "1") == "0":
+        logger.info("RUN_SCHEDULER=0 — планировщик отключён для этого процесса")
+        return False
+
+    try:
+        if os.path.exists(LOCK_FILE_PATH):
+            with open(LOCK_FILE_PATH, "r") as f:
+                old_pid_str = f.read().strip()
+            old_pid = int(old_pid_str) if old_pid_str.isdigit() else None
+            if old_pid and _pid_is_running(old_pid):
+                logger.warning(
+                    "Обнаружен активный планировщик (pid=%s) — новый экземпляр не будет его запускать",
+                    old_pid,
+                )
+                return False
+        with open(LOCK_FILE_PATH, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+    except OSError:
+        # Если не удалось поработать с локом (например, нет доступа к /tmp) —
+        # не блокируем запуск бота, просто запускаем планировщик как обычно.
+        logger.warning("Не удалось создать файл-лок планировщика, продолжаем без него")
+        return True
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 async def main():
     db.init_db()
-    scheduler.add_job(check_scheduled_posts, "interval", seconds=30)
-    scheduler.start()
+    if _acquire_scheduler_lock():
+        scheduler.add_job(check_scheduled_posts, "interval", seconds=30)
+        scheduler.start()
+        logger.info("Планировщик запущен")
+    else:
+        logger.info("Планировщик пропущен (уже запущен в другом процессе)")
     logger.info("Бот запущен")
     await dp.start_polling(bot)
 
