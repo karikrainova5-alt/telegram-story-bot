@@ -1,11 +1,20 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
-DB_PATH = "bot.db"
+# Persistent volume mount point on Railway. Must survive restarts/redeploys.
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
+
+
+def _ensure_db_dir():
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
 
 
 def init_db():
+    _ensure_db_dir()
     with get_conn() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS accounts (
@@ -21,6 +30,7 @@ def init_db():
             telegram_id     INTEGER NOT NULL,
             media_type      TEXT NOT NULL,
             media_urls      TEXT NOT NULL,
+            media_file_ids  TEXT,
             caption         TEXT,
             publish_at      TEXT NOT NULL,
             status          TEXT NOT NULL DEFAULT 'pending',
@@ -43,10 +53,17 @@ def init_db():
             paid_at      TEXT NOT NULL
         );
         """)
+        # Migration for databases created before media_file_ids existed.
+        existing_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(scheduled_posts)").fetchall()
+        }
+        if "media_file_ids" not in existing_columns:
+            conn.execute("ALTER TABLE scheduled_posts ADD COLUMN media_file_ids TEXT")
 
 
 @contextmanager
 def get_conn():
+    _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
@@ -81,13 +98,13 @@ def delete_account(telegram_id: int):
 
 
 def add_scheduled_post(telegram_id: int, media_type: str, media_urls_json: str,
-                        caption: str, publish_at_iso: str) -> int:
+                        caption: str, publish_at_iso: str, media_file_ids_json: str = None) -> int:
     with get_conn() as conn:
         cur = conn.execute("""
             INSERT INTO scheduled_posts
-                (telegram_id, media_type, media_urls, caption, publish_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (telegram_id, media_type, media_urls_json, caption, publish_at_iso,
+                (telegram_id, media_type, media_urls, media_file_ids, caption, publish_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (telegram_id, media_type, media_urls_json, media_file_ids_json, caption, publish_at_iso,
               datetime.utcnow().isoformat()))
         return cur.lastrowid
 
