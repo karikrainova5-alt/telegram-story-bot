@@ -1,8 +1,9 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
-DB_PATH = "bot.db"
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 
 
 def init_db():
