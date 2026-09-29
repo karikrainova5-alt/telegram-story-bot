@@ -19,13 +19,28 @@ def init_db():
         CREATE TABLE IF NOT EXISTS scheduled_posts (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id     INTEGER NOT NULL,
-            media_type      TEXT NOT NULL,   -- photo / video / carousel
-            media_urls      TEXT NOT NULL,   -- JSON-список URL
+            media_type      TEXT NOT NULL,
+            media_urls      TEXT NOT NULL,
             caption         TEXT,
-            publish_at      TEXT NOT NULL,   -- ISO datetime, UTC
-            status          TEXT NOT NULL DEFAULT 'pending', -- pending/done/error
+            publish_at      TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
             error_message   TEXT,
             created_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_access (
+            telegram_id         INTEGER PRIMARY KEY,
+            trial_used          INTEGER NOT NULL DEFAULT 0,
+            subscription_until  TEXT,
+            updated_at           TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS payments (
+            charge_id    TEXT PRIMARY KEY,
+            telegram_id  INTEGER NOT NULL,
+            amount       INTEGER NOT NULL,
+            currency     TEXT NOT NULL,
+            paid_at      TEXT NOT NULL
         );
         """)
 
@@ -112,3 +127,77 @@ def cancel_post(post_id: int, telegram_id: int) -> bool:
             DELETE FROM scheduled_posts WHERE id=? AND telegram_id=? AND status='pending'
         """, (post_id, telegram_id))
         return cur.rowcount > 0
+
+
+def get_access(telegram_id: int):
+    """Return trial/subscription status for a user."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_access WHERE telegram_id=?",
+            (telegram_id,)
+        ).fetchone()
+        if not row:
+            return {"trial_used": False, "subscription_until": None, "active": False}
+        until = row["subscription_until"]
+        active = False
+        if until:
+            try:
+                active = datetime.fromisoformat(until) > datetime.utcnow()
+            except ValueError:
+                active = False
+        return {
+            "trial_used": bool(row["trial_used"]),
+            "subscription_until": until,
+            "active": active,
+        }
+
+
+def consume_trial(telegram_id: int):
+    with get_conn() as conn:
+        now = datetime.utcnow().isoformat()
+        conn.execute("""
+            INSERT INTO user_access (telegram_id, trial_used, updated_at)
+            VALUES (?, 1, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET
+                trial_used=1,
+                updated_at=excluded.updated_at
+        """, (telegram_id, now))
+
+
+def activate_subscription(telegram_id: int, days: int = 30):
+    with get_conn() as conn:
+        now = datetime.utcnow()
+        row = conn.execute(
+            "SELECT subscription_until FROM user_access WHERE telegram_id=?",
+            (telegram_id,)
+        ).fetchone()
+        current_until = None
+        if row and row["subscription_until"]:
+            try:
+                current_until = datetime.fromisoformat(row["subscription_until"])
+            except ValueError:
+                current_until = None
+
+        start = current_until if current_until and current_until > now else now
+        new_until = start + __import__("datetime").timedelta(days=days)
+        conn.execute("""
+            INSERT INTO user_access (telegram_id, trial_used, subscription_until, updated_at)
+            VALUES (?, 1, ?, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET
+                trial_used=1,
+                subscription_until=excluded.subscription_until,
+                updated_at=excluded.updated_at
+        """, (telegram_id, new_until.isoformat(), now.isoformat()))
+        return new_until
+
+
+def record_payment(charge_id: str, telegram_id: int, amount: int, currency: str) -> bool:
+    with get_conn() as conn:
+        try:
+            conn.execute("""
+                INSERT INTO payments (charge_id, telegram_id, amount, currency, paid_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (charge_id, telegram_id, amount, currency, datetime.utcnow().isoformat()))
+            return True
+        except sqlite3.IntegrityError:
+            return False
