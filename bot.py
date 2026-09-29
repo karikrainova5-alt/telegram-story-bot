@@ -22,7 +22,10 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    LabeledPrice, PreCheckoutQuery,
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
@@ -34,6 +37,10 @@ load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not BOT_TOKEN:
     raise SystemExit("Задайте TELEGRAM_BOT_TOKEN в .env")
+
+SUBSCRIPTION_STARS = 250
+SUBSCRIPTION_DAYS = 30
+PAYMENT_PAYLOAD = "postpilot_monthly_250_stars"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,15 +72,26 @@ class NewPostState(StatesGroup):
 # ---------------------------------------------------------------------------
 @router.message(Command("start"))
 async def cmd_start(message: Message):
+    access = db.get_access(message.from_user.id)
+    subscription_text = "Подписка активна" if access["active"] else (
+        "1-й пост бесплатно" if not access["trial_used"] else "Нужна подписка: 250 ⭐ / 30 дней"
+    )
     await message.answer(
-        "Привет! Я публикую посты в Instagram по расписанию через официальный API.\n\n"
+        "Привет! 👋 Я PostPilot — автопостинг в Instagram.\n\n"
+        "Как пользоваться:\n"
+        "1. /connect — подключи Instagram Business/Creator.\n"
+        "2. /newpost — пришли фото/видео, добавь текст и выбери «сейчас» или дату.\n"
+        "3. Первый пост — бесплатно. Далее подписка 250 ⭐ на 30 дней.\n\n"
         "Команды:\n"
-        "/connect — подключить Instagram-аккаунт\n"
-        "/newpost — создать пост (сразу или по расписанию)\n"
-        "/myposts — список запланированных постов\n"
-        "/disconnect — отключить аккаунт\n\n"
-        "⚠️ Работает только с Instagram Business/Creator аккаунтом, "
-        "подключённым к странице Facebook. Личные аккаунты официальный API не поддерживает."
+        "/newpost — создать публикацию\n"
+        "/myposts — мои запланированные публикации\n"
+        "/subscribe — оплатить 250 ⭐ / 30 дней\n"
+        "/status — проверить доступ\n"
+        "/disconnect — отключить Instagram\n"
+        "/terms — условия\n"
+        "/paysupport — помощь по оплате\n\n"
+        f"Статус: {subscription_text}\n\n"
+        "⚠️ Нужен Instagram Business/Creator, подключённый к Facebook Page."
     )
 
 
@@ -128,6 +146,114 @@ async def cmd_disconnect(message: Message):
 
 
 # ---------------------------------------------------------------------------
+# Оплата Telegram Stars
+# ---------------------------------------------------------------------------
+async def _send_subscription_invoice(message: Message):
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="PostPilot — подписка",
+        description="Автопостинг в Instagram на 30 дней. 250 Telegram Stars.",
+        payload=PAYMENT_PAYLOAD,
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label="30 дней PostPilot", amount=SUBSCRIPTION_STARS)],
+    )
+
+
+@router.message(Command("subscribe"))
+async def cmd_subscribe(message: Message):
+    access = db.get_access(message.from_user.id)
+    if access["active"]:
+        until = datetime.fromisoformat(access["subscription_until"])
+        await message.answer(
+            f"Подписка уже активна до {until.strftime('%d.%m.%Y %H:%M')} UTC.\n"
+            "Продлить можно здесь же:"
+        )
+    await _send_subscription_invoice(message)
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message):
+    access = db.get_access(message.from_user.id)
+    if access["active"]:
+        until = datetime.fromisoformat(access["subscription_until"])
+        await message.answer(
+            f"✅ Подписка активна до {until.strftime('%d.%m.%Y %H:%M')} UTC.\n"
+            "Можно публиковать без ограничений."
+        )
+    elif not access["trial_used"]:
+        await message.answer(
+            "🎁 Твой первый пост бесплатный.\n"
+            "После него — 250 ⭐ за 30 дней."
+        )
+    else:
+        await message.answer(
+            "Подписка не активна.\n"
+            "Оплата: 250 ⭐ за 30 дней."
+        )
+
+
+@router.message(Command("terms"))
+async def cmd_terms(message: Message):
+    await message.answer(
+        "Условия PostPilot\n\n"
+        "• Первый опубликованный/запланированный пост — бесплатно.\n"
+        "• Далее доступ к автопостингу — 250 Telegram Stars за 30 дней.\n"
+        "• Подписка оплачивается внутри Telegram Stars.\n"
+        "• Instagram должен поддерживать публикацию через официальный API Meta.\n"
+        "• Сервис не гарантирует публикацию при ошибках Meta, Instagram, "
+        "Facebook или недоступности аккаунта.\n"
+        "• По вопросам оплаты используй /paysupport."
+    )
+
+
+@router.message(Command("paysupport"))
+async def cmd_pay_support(message: Message):
+    await message.answer(
+        "Помощь по оплате\n\n"
+        "Если Stars списались, но подписка не включилась, напиши сюда "
+        "сообщение с датой оплаты и скрином чека.\n"
+        "Не присылай токены Meta, пароли или коды входа."
+    )
+
+
+@router.pre_checkout_query()
+async def process_pre_checkout(query: PreCheckoutQuery):
+    if query.invoice_payload != PAYMENT_PAYLOAD:
+        await query.answer(ok=False, error_message="Неизвестный платёж.")
+        return
+    await query.answer(ok=True)
+
+
+@router.message(F.successful_payment)
+async def process_successful_payment(message: Message):
+    payment = message.successful_payment
+    if payment.invoice_payload != PAYMENT_PAYLOAD:
+        return
+    if payment.currency != "XTR" or payment.total_amount != SUBSCRIPTION_STARS:
+        await message.answer("Платёж получен, но параметры не совпали. Напиши /paysupport.")
+        return
+
+    recorded = db.record_payment(
+        payment.telegram_payment_charge_id,
+        message.from_user.id,
+        payment.total_amount,
+        payment.currency,
+    )
+    if not recorded:
+        await message.answer("Этот платёж уже был обработан. Проверь /status.")
+        return
+
+    until = db.activate_subscription(message.from_user.id, SUBSCRIPTION_DAYS)
+    await message.answer(
+        "🎉 Оплата получена!\n\n"
+        f"Подписка PostPilot активна до {until.strftime('%d.%m.%Y %H:%M')} UTC.\n"
+        "Теперь можно публиковать посты без ограничений.\n\n"
+        "➡️ /newpost"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Создание поста
 # ---------------------------------------------------------------------------
 @router.message(Command("newpost"))
@@ -136,6 +262,19 @@ async def cmd_newpost(message: Message, state: FSMContext):
     if not account:
         await message.answer("Сначала подключи Instagram: /connect")
         return
+
+    access = db.get_access(message.from_user.id)
+    if not access["active"] and access["trial_used"]:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⭐ Оплатить 250 Stars / 30 дней", callback_data="buy_subscription")]
+        ])
+        await message.answer(
+            "Твой бесплатный пост уже использован.\n\n"
+            "Для дальнейших публикаций нужна подписка: **250 ⭐ / 30 дней**.",
+            reply_markup=kb,
+        )
+        return
+
     await state.update_data(media_urls=[], media_type=None)
     await message.answer(
         "Пришли фото или видео для поста.\n"
@@ -202,9 +341,32 @@ async def _ask_schedule_choice(message: Message, state: FSMContext):
 async def newpost_now(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await callback.message.edit_text("Публикую...")
-    await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""))
-    await callback.message.answer("Готово ✅")
+    try:
+        await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""))
+    except Exception as e:
+        await callback.message.answer(f"❌ Не удалось опубликовать: {e}")
+        await state.clear()
+        return
+
+    access = db.get_access(callback.from_user.id)
+    if not access["trial_used"] and not access["active"]:
+        db.consume_trial(callback.from_user.id)
+        await callback.message.answer(
+            "Готово ✅ Первый пост бесплатный!\n\n"
+            "Для следующих публикаций — подписка 250 ⭐ / 30 дней.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⭐ Оплатить подписку", callback_data="buy_subscription")]
+            ]),
+        )
+    else:
+        await callback.message.answer("Готово ✅")
     await state.clear()
+
+
+@router.callback_query(F.data == "buy_subscription")
+async def buy_subscription_callback(callback: CallbackQuery):
+    await callback.answer()
+    await _send_subscription_invoice(callback.message)
 
 
 @router.callback_query(NewPostState.waiting_schedule_choice, F.data == "post_schedule")
@@ -239,7 +401,17 @@ async def newpost_datetime(message: Message, state: FSMContext):
         caption=data.get("caption", ""),
         publish_at_iso=dt_utc.isoformat(),
     )
-    await message.answer(f"📅 Запланировано на {message.text.strip()} (МСК). ID поста: {post_id}")
+
+    access = db.get_access(message.from_user.id)
+    trial_message = ""
+    if not access["trial_used"] and not access["active"]:
+        db.consume_trial(message.from_user.id)
+        trial_message = "\n\n🎁 Это твой бесплатный первый пост."
+
+    await message.answer(
+        f"📅 Запланировано на {message.text.strip()} (МСК). ID поста: {post_id}"
+        f"{trial_message}"
+    )
     await state.clear()
 
 
