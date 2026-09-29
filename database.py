@@ -1,6 +1,6 @@
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 DB_PATH = "bot.db"
 
@@ -179,7 +179,7 @@ def activate_subscription(telegram_id: int, days: int = 30):
                 current_until = None
 
         start = current_until if current_until and current_until > now else now
-        new_until = start + __import__("datetime").timedelta(days=days)
+        new_until = start + timedelta(days=days)
         conn.execute("""
             INSERT INTO user_access (telegram_id, trial_used, subscription_until, updated_at)
             VALUES (?, 1, ?, ?)
