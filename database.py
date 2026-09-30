@@ -1,8 +1,9 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
-DB_PATH = "bot.db"
+DB_PATH = os.getenv("DB_PATH", "/data/bot.db")
 
 
 def init_db():
@@ -13,8 +14,14 @@ def init_db():
             ig_user_id      TEXT NOT NULL,
             access_token    TEXT NOT NULL,
             ig_username     TEXT,
-            connected_at    TEXT NOT NULL
+            connected_at    TEXT NOT NULL,
+            token_expires_at TEXT
         );
+
+        try:
+            conn.execute("ALTER TABLE accounts ADD COLUMN token_expires_at TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         CREATE TABLE IF NOT EXISTS scheduled_posts (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,23 +63,30 @@ def get_conn():
         conn.close()
 
 
-def save_account(telegram_id: int, ig_user_id: str, access_token: str, ig_username: str):
+def save_account(telegram_id: int, ig_user_id: str, access_token: str, ig_username: str, token_expires_at: str | None = None):
     with get_conn() as conn:
         conn.execute("""
-            INSERT INTO accounts (telegram_id, ig_user_id, access_token, ig_username, connected_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO accounts (telegram_id, ig_user_id, access_token, ig_username, connected_at, token_expires_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 ig_user_id=excluded.ig_user_id,
                 access_token=excluded.access_token,
                 ig_username=excluded.ig_username,
-                connected_at=excluded.connected_at
-        """, (telegram_id, ig_user_id, access_token, ig_username, datetime.utcnow().isoformat()))
+                connected_at=excluded.connected_at,
+                token_expires_at=excluded.token_expires_at
+        """, (telegram_id, ig_user_id, access_token, ig_username, datetime.utcnow().isoformat(), token_expires_at))
 
 
 def get_account(telegram_id: int):
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM accounts WHERE telegram_id=?", (telegram_id,)).fetchone()
         return dict(row) if row else None
+
+
+def update_account_token(telegram_id: int, access_token: str, token_expires_at: str | None):
+    with get_conn() as conn:
+        conn.execute("UPDATE accounts SET access_token=?, token_expires_at=? WHERE telegram_id=?",
+                     (access_token, token_expires_at, telegram_id))
 
 
 def delete_account(telegram_id: int):
@@ -201,3 +215,30 @@ def record_payment(charge_id: str, telegram_id: int, amount: int, currency: str)
             return True
         except sqlite3.IntegrityError:
             return False
+
+
+def create_oauth_state(state: str, telegram_id: int, ttl_minutes: int = 10):
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS oauth_states (
+                state TEXT PRIMARY KEY,
+                telegram_id INTEGER NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("INSERT INTO oauth_states(state, telegram_id, expires_at) VALUES (?, ?, ?)",
+                     (state, telegram_id, (datetime.utcnow() + timedelta(minutes=ttl_minutes)).isoformat()))
+
+
+def consume_oauth_state(state: str):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM oauth_states WHERE state=?", (state,)).fetchone()
+        conn.execute("DELETE FROM oauth_states WHERE state=?", (state,))
+        if not row:
+            return None
+        try:
+            if datetime.fromisoformat(row["expires_at"]) <= datetime.utcnow():
+                return None
+        except ValueError:
+            return None
+        return dict(row)
