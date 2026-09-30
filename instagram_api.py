@@ -10,7 +10,7 @@ import time
 import requests
 
 GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v25.0")
-GRAPH_URL = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
+GRAPH_URL = f"https://graph.instagram.com/{GRAPH_API_VERSION}"
 
 
 class InstagramAPIError(Exception):
@@ -50,6 +50,13 @@ class InstagramClient:
             msg = err.get("message", "неизвестная ошибка")
             raise InstagramAPIError(f"Instagram API error: {msg}")
         return payload
+
+    def refresh_long_lived_token(self) -> dict:
+        r = requests.get("https://graph.instagram.com/refresh_access_token", params={
+            "grant_type": "ig_refresh_token",
+            "access_token": self.access_token,
+        }, timeout=30)
+        return self._handle(r)
 
     def verify_account(self) -> dict:
         """Проверяет, что ig_user_id и токен рабочие, возвращает username."""
