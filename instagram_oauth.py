@@ -11,7 +11,7 @@ class OAuthServer:
         self.bot = bot
         self.app_id = os.getenv("META_APP_ID")
         self.app_secret = os.getenv("META_APP_SECRET")
-        self.redirect_uri = os.getenv("META_REDIRECT_URI")
+        self.redirect_uri = os.getenv("META_REDIRECT_URI", "https://telegram-story-bot-production-4554.up.railway.app/oauth/instagram/callback")
         self.host = os.getenv("OAUTH_HOST", "0.0.0.0")
         self.port = int(os.getenv("PORT", "8080"))
         self.enabled = bool(self.app_id and self.app_secret and self.redirect_uri)
@@ -23,7 +23,7 @@ class OAuthServer:
             "client_id": self.app_id,
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
-            "scope": "instagram_business_basic,instagram_business_content_publish",
+            "scope": "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_messages",
             "state": state,
         }
         return "https://www.instagram.com/oauth/authorize?" + urlencode(params)
