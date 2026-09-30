@@ -18,11 +18,6 @@ def init_db():
             token_expires_at TEXT
         );
 
-        try:
-            conn.execute("ALTER TABLE accounts ADD COLUMN token_expires_at TEXT")
-        except sqlite3.OperationalError:
-            pass
-
         CREATE TABLE IF NOT EXISTS scheduled_posts (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id     INTEGER NOT NULL,
@@ -50,6 +45,10 @@ def init_db():
             paid_at      TEXT NOT NULL
         );
         """)
+        try:
+            conn.execute("ALTER TABLE accounts ADD COLUMN token_expires_at TEXT")
+        except sqlite3.OperationalError:
+            pass
 
 
 @contextmanager
