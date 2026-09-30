@@ -28,6 +28,7 @@ from aiogram.types import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+from instagram_oauth import OAuthServer
 
 import database as db
 from instagram_api import InstagramClient, InstagramAPIError
@@ -50,6 +51,7 @@ dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 dp.include_router(router)
 scheduler = AsyncIOScheduler()
+oauth_server = OAuthServer(bot)
 
 
 # ---------------------------------------------------------------------------
@@ -99,44 +101,22 @@ async def cmd_start(message: Message):
 # Подключение аккаунта
 # ---------------------------------------------------------------------------
 @router.message(Command("connect"))
-async def cmd_connect(message: Message, state: FSMContext):
-    await message.answer(
-        "Шаг 1/2. Пришли Instagram Business Account ID.\n"
-        "Как его получить — см. README.md, раздел «Получение доступа»."
-    )
-    await state.set_state(ConnectState.waiting_ig_user_id)
-
-
-@router.message(ConnectState.waiting_ig_user_id)
-async def connect_get_id(message: Message, state: FSMContext):
-    await state.update_data(ig_user_id=message.text.strip())
-    await message.answer("Шаг 2/2. Теперь пришли долгоживущий Page Access Token.")
-    await state.set_state(ConnectState.waiting_token)
-
-
-@router.message(ConnectState.waiting_token)
-async def connect_get_token(message: Message, state: FSMContext):
-    data = await state.get_data()
-    ig_user_id = data["ig_user_id"]
-    token = message.text.strip()
-
-    client = InstagramClient(ig_user_id, token)
-    try:
-        info = client.verify_account()
-    except InstagramAPIError as e:
-        await message.answer(f"Не удалось подключиться: {e}\nПроверь ID и токен и попробуй снова /connect.")
-        await state.clear()
+async def cmd_connect(message: Message):
+    if not oauth_server.enabled:
+        await message.answer(
+            "Подключение через Meta пока не настроено на сервере.\n"
+            "Администратору нужно добавить Meta App ID и Secret в Railway."
+        )
         return
-
-    db.save_account(message.from_user.id, ig_user_id, token, info.get("username", "?"))
-    await message.answer(f"✅ Подключено: @{info.get('username', '?')}")
-    await state.clear()
-
-    # На всякий случай удаляем сообщение с токеном из чата, если возможно
-    try:
-        await message.delete()
-    except Exception:
-        pass
+    url = oauth_server.authorization_url(message.from_user.id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📸 Подключить Instagram через Meta", url=url)]
+    ])
+    await message.answer(
+        "Нажми кнопку ниже и войди в свой Instagram Business/Creator аккаунт.\n\n"
+        "После разрешения доступ сохранится автоматически — ID и токен вручную вводить не нужно.",
+        reply_markup=kb,
+    )
 
 
 @router.message(Command("disconnect"))
@@ -489,6 +469,7 @@ async def check_scheduled_posts():
 # ---------------------------------------------------------------------------
 async def main():
     db.init_db()
+    await oauth_server.start()
     scheduler.add_job(check_scheduled_posts, "interval", seconds=30)
     scheduler.start()
     logger.info("Бот запущен")
