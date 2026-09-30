@@ -435,6 +435,23 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
         raise InstagramAPIError("Аккаунт не подключён")
     client = InstagramClient(account["ig_user_id"], account["access_token"])
 
+    if account.get("token_expires_at"):
+        try:
+            expires_at = datetime.fromisoformat(account["token_expires_at"])
+            if expires_at - datetime.utcnow() < timedelta(days=30):
+                refreshed = client.refresh_long_lived_token()
+                new_token = refreshed.get("access_token")
+                if new_token:
+                    expires_in = int(refreshed.get("expires_in", 60 * 24 * 3600))
+                    db.update_account_token(
+                        telegram_id,
+                        new_token,
+                        (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
+                    )
+                    client = InstagramClient(account["ig_user_id"], new_token)
+        except Exception:
+            logger.warning("Instagram token refresh failed; using current token", exc_info=True)
+
     if media_type == "photo":
         return client.publish_photo(media_urls[0], caption)
     elif media_type == "video":
