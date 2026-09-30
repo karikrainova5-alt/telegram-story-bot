@@ -486,7 +486,9 @@ async def check_scheduled_posts():
 # ---------------------------------------------------------------------------
 async def main():
     db.init_db()
-    await oauth_server.start()
+    # Run the aiohttp callback server in the background, keeping a reference
+    # so the task isn't garbage collected.
+    oauth_task = asyncio.create_task(oauth_server.start())
     scheduler.add_job(check_scheduled_posts, "interval", seconds=30)
     scheduler.start()
     logger.info("Бот запущен")
