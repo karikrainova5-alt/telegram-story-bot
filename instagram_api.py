@@ -93,10 +93,10 @@ class InstagramClient:
     def search_audio(self, query: str = "", audio_type: str = "music") -> list[dict]:
         if self.auth_type != "facebook":
             raise InstagramAPIError("Поиск музыки Instagram доступен только через Facebook Login. Нажми /connect и переподключи Instagram.")
-        params = {"audio_type": audio_type}
+        params = {"audio_type": audio_type, "ig_user_id": self.ig_user_id}
         if query.strip():
             params["search_query"] = query.strip()
-        result = self._get(f"{self.ig_user_id}/ig_audio", params)
+        result = self._get("ig_audio", params)
         return result.get("data", result if isinstance(result, list) else [])
 
     # ---------- Карусель (альбом из нескольких фото/видео) ----------
