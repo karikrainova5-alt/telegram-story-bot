@@ -18,7 +18,7 @@ class InstagramAPIError(Exception):
 
 
 class InstagramClient:
-    def __init__(self, ig_user_id: str, access_token: str, auth_type: str = 'instagram'):
+    def __init__(self, ig_user_id: str, access_token: str):
         """
         ig_user_id — Instagram Business Account ID (не username!)
         access_token — долгоживущий Page Access Token с правами:
@@ -26,19 +26,17 @@ class InstagramClient:
         """
         self.ig_user_id = ig_user_id
         self.access_token = access_token
-        self.auth_type = auth_type
-        self.graph_url = (f"https://graph.facebook.com/{GRAPH_API_VERSION}" if auth_type == 'facebook' else GRAPH_URL)
 
     def _get(self, path, params=None):
         params = params or {}
         params["access_token"] = self.access_token
-        r = requests.get(f"{self.graph_url}/{path}", params=params, timeout=30)
+        r = requests.get(f"{GRAPH_URL}/{path}", params=params, timeout=30)
         return self._handle(r)
 
     def _post(self, path, data=None):
         data = data or {}
         data["access_token"] = self.access_token
-        r = requests.post(f"{self.graph_url}/{path}", data=data, timeout=30)
+        r = requests.post(f"{GRAPH_URL}/{path}", data=data, timeout=30)
         return self._handle(r)
 
     @staticmethod
@@ -74,30 +72,16 @@ class InstagramClient:
         return self._publish_container(creation_id)
 
     # ---------- Публикация одиночного видео / Reels ----------
-    def publish_video(self, video_url: str, caption: str = "", is_reel: bool = True, audio_id: str | None = None) -> str:
+    def publish_video(self, video_url: str, caption: str = "", is_reel: bool = True) -> str:
         media_type = "REELS" if is_reel else "VIDEO"
-        payload = {
+        container = self._post(f"{self.ig_user_id}/media", {
             "video_url": video_url,
             "caption": caption,
             "media_type": media_type,
-        }
-        if audio_id and is_reel:
-            if self.auth_type != "facebook":
-                raise InstagramAPIError("Музыка Instagram доступна только после подключения через Facebook Login. Нажми /connect и переподключи Instagram.")
-            payload["audio_id"] = audio_id
-        container = self._post(f"{self.ig_user_id}/media", payload)
+        })
         creation_id = container["id"]
         self._wait_until_ready(creation_id)
         return self._publish_container(creation_id)
-
-    def search_audio(self, query: str = "", audio_type: str = "music") -> list[dict]:
-        if self.auth_type != "facebook":
-            raise InstagramAPIError("Поиск музыки Instagram доступен только через Facebook Login. Нажми /connect и переподключи Instagram.")
-        params = {"audio_type": audio_type, "ig_user_id": self.ig_user_id}
-        if query.strip():
-            params["search_query"] = query.strip()
-        result = self._get("ig_audio", params)
-        return result.get("data", result if isinstance(result, list) else [])
 
     # ---------- Карусель (альбом из нескольких фото/видео) ----------
     def publish_carousel(self, media_urls: list[str], caption: str = "") -> str:
