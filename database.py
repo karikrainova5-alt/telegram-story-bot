@@ -62,7 +62,7 @@ def get_conn():
         conn.close()
 
 
-def save_account(telegram_id: int, ig_user_id: str, access_token: str, ig_username: str, token_expires_at: str | None = None):
+def save_account(telegram_id: int, ig_user_id: str, access_token: str, ig_username: str, token_expires_at: str | None = None, auth_type: str = 'instagram'):
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO accounts (telegram_id, ig_user_id, access_token, ig_username, connected_at, token_expires_at)
@@ -73,7 +73,7 @@ def save_account(telegram_id: int, ig_user_id: str, access_token: str, ig_userna
                 ig_username=excluded.ig_username,
                 connected_at=excluded.connected_at,
                 token_expires_at=excluded.token_expires_at
-        """, (telegram_id, ig_user_id, access_token, ig_username, datetime.utcnow().isoformat(), token_expires_at))
+        """, (telegram_id, ig_user_id, access_token, ig_username, datetime.utcnow().isoformat(), token_expires_at, auth_type))
 
 
 def get_account(telegram_id: int):
