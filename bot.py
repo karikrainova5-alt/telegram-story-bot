@@ -41,6 +41,10 @@ if not BOT_TOKEN:
 
 SUBSCRIPTION_STARS = 250
 SUBSCRIPTION_DAYS = 30
+ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", "0"))
+
+def is_admin(telegram_id: int) -> bool:
+    return telegram_id == ADMIN_TELEGRAM_ID
 PAYMENT_PAYLOAD = "postpilot_monthly_250_stars"
 
 logging.basicConfig(level=logging.INFO)
@@ -81,8 +85,11 @@ async def cmd_myid(message: Message):
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
-    access = db.get_access(message.from_user.id)
-    subscription_text = "Подписка активна" if access["active"] else (
+    if is_admin(message.from_user.id):
+        subscription_text = "👑 Администратор — доступ бесплатный и без ограничений"
+    else:
+        access = db.get_access(message.from_user.id)
+        subscription_text = "Подписка активна" if access["active"] else (
         "1-й пост бесплатно" if not access["trial_used"] else "Нужна подписка: 250 ⭐ / 30 дней"
     )
     await message.answer(
@@ -149,6 +156,9 @@ async def _send_subscription_invoice(message: Message):
 
 @router.message(Command("subscribe"))
 async def cmd_subscribe(message: Message):
+    if is_admin(message.from_user.id):
+        await message.answer("👑 Ты администратор. Доступ к PostPilot бесплатный и без ограничений.")
+        return
     access = db.get_access(message.from_user.id)
     if access["active"]:
         until = datetime.fromisoformat(access["subscription_until"])
@@ -251,7 +261,7 @@ async def cmd_newpost(message: Message, state: FSMContext):
         return
 
     access = db.get_access(message.from_user.id)
-    if not access["active"] and access["trial_used"]:
+    if not is_admin(message.from_user.id) and not access["active"] and access["trial_used"]:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⭐ Оплатить 250 Stars / 30 дней", callback_data="buy_subscription")]
         ])
@@ -416,7 +426,7 @@ async def newpost_now(callback: CallbackQuery, state: FSMContext):
         return
 
     access = db.get_access(callback.from_user.id)
-    if not access["trial_used"] and not access["active"]:
+    if not is_admin(callback.from_user.id) and not access["trial_used"] and not access["active"]:
         db.consume_trial(callback.from_user.id)
         await callback.message.answer(
             "Готово ✅ Первый пост бесплатный!\n\n"
@@ -474,7 +484,7 @@ async def newpost_datetime(message: Message, state: FSMContext):
 
     access = db.get_access(message.from_user.id)
     trial_message = ""
-    if not access["trial_used"] and not access["active"]:
+    if not is_admin(message.from_user.id) and not access["trial_used"] and not access["active"]:
         db.consume_trial(message.from_user.id)
         trial_message = "\n\n🎁 Это твой бесплатный первый пост."
 
