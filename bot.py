@@ -312,16 +312,8 @@ async def newpost_caption(message: Message, state: FSMContext):
 
 
 async def _ask_music_choice(message: Message, state: FSMContext):
-    data = await state.get_data()
-    if data.get("media_type") != "video":
-        await _ask_schedule_choice(message, state)
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎵 Музыка Instagram", callback_data="music_instagram")],
-        [InlineKeyboardButton(text="🔇 Без музыки", callback_data="music_skip")],
-    ])
-    await message.answer("Добавить музыку к Reels?", reply_markup=kb)
-    await state.set_state(NewPostState.waiting_music_choice)
+    # Возвращаем прежний стабильный сценарий: после подписи сразу выбор публикации.
+    await _ask_schedule_choice(message, state)
 
 
 @router.callback_query(NewPostState.waiting_music_choice, F.data == "music_skip")
@@ -347,7 +339,7 @@ async def music_search(message: Message, state: FSMContext):
         await message.answer("Сначала подключи Instagram: /connect")
         return
     try:
-        client = InstagramClient(account["ig_user_id"], account["access_token"], account.get("auth_type", "instagram"))
+        client = InstagramClient(account["ig_user_id"], account["access_token"])
         tracks = await asyncio.to_thread(client.search_audio, message.text.strip(), "music")
     except Exception as e:
         await message.answer(
@@ -541,14 +533,14 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
                         new_token,
                         (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
                     )
-                    client = InstagramClient(account["ig_user_id"], new_token, account.get("auth_type", "instagram"))
+                    client = InstagramClient(account["ig_user_id"], new_token)
         except Exception:
             logger.warning("Instagram token refresh failed; using current token", exc_info=True)
 
     if media_type == "photo":
         return client.publish_photo(media_urls[0], caption)
     elif media_type == "video":
-        return client.publish_video(media_urls[0], caption, is_reel=True, audio_id=audio_id)
+        return client.publish_video(media_urls[0], caption, is_reel=True)
     elif media_type == "carousel":
         return client.publish_carousel(media_urls, caption)
     else:
