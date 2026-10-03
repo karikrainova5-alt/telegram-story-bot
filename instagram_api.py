@@ -1,8 +1,5 @@
 """
-Обёртка над официальным Instagram Graph API (для Business/Creator аккаунтов,
-подключённых к странице Facebook).
-
-Документация: https://developers.facebook.com/docs/instagram-api/guides/content-publishing
+Обёртка над официальным Instagram Graph API.
 """
 
 import os
@@ -10,7 +7,6 @@ import time
 import requests
 
 GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v25.0")
-GRAPH_URL = f"https://graph.instagram.com/{GRAPH_API_VERSION}"
 
 
 class InstagramAPIError(Exception):
@@ -18,25 +14,26 @@ class InstagramAPIError(Exception):
 
 
 class InstagramClient:
-    def __init__(self, ig_user_id: str, access_token: str):
-        """
-        ig_user_id — Instagram Business Account ID (не username!)
-        access_token — долгоживущий Page Access Token с правами:
-            instagram_basic, instagram_content_publish, pages_read_engagement
-        """
+    def __init__(self, ig_user_id: str, access_token: str, auth_type: str = "instagram"):
         self.ig_user_id = ig_user_id
         self.access_token = access_token
+        self.auth_type = auth_type or "instagram"
+        self.graph_url = (
+            f"https://graph.facebook.com/{GRAPH_API_VERSION}"
+            if self.auth_type == "facebook"
+            else f"https://graph.instagram.com/{GRAPH_API_VERSION}"
+        )
 
     def _get(self, path, params=None):
         params = params or {}
         params["access_token"] = self.access_token
-        r = requests.get(f"{GRAPH_URL}/{path}", params=params, timeout=30)
+        r = requests.get(f"{self.graph_url}/{path}", params=params, timeout=30)
         return self._handle(r)
 
     def _post(self, path, data=None):
         data = data or {}
         data["access_token"] = self.access_token
-        r = requests.post(f"{GRAPH_URL}/{path}", data=data, timeout=30)
+        r = requests.post(f"{self.graph_url}/{path}", data=data, timeout=30)
         return self._handle(r)
 
     @staticmethod
@@ -52,6 +49,8 @@ class InstagramClient:
         return payload
 
     def refresh_long_lived_token(self) -> dict:
+        if self.auth_type == "facebook":
+            raise InstagramAPIError("Для Facebook Login токен обновляется через повторное подключение Meta.")
         r = requests.get("https://graph.instagram.com/refresh_access_token", params={
             "grant_type": "ig_refresh_token",
             "access_token": self.access_token,
@@ -59,19 +58,15 @@ class InstagramClient:
         return self._handle(r)
 
     def verify_account(self) -> dict:
-        """Проверяет, что ig_user_id и токен рабочие, возвращает username."""
         return self._get(self.ig_user_id, {"fields": "username,name"})
 
-    # ---------- Публикация одиночного фото ----------
     def publish_photo(self, image_url: str, caption: str = "") -> str:
         container = self._post(f"{self.ig_user_id}/media", {
             "image_url": image_url,
             "caption": caption,
         })
-        creation_id = container["id"]
-        return self._publish_container(creation_id)
+        return self._publish_container(container["id"])
 
-    # ---------- Публикация одиночного видео / Reels ----------
     def publish_video(self, video_url: str, caption: str = "", is_reel: bool = True, audio_id: str | None = None) -> str:
         media_type = "REELS" if is_reel else "VIDEO"
         data = {"video_url": video_url, "caption": caption, "media_type": media_type}
@@ -82,8 +77,6 @@ class InstagramClient:
         self._wait_until_ready(creation_id)
         return self._publish_container(creation_id)
 
-
-    # ---------- Публикация Stories ----------
     def publish_story(self, media_url: str, is_video: bool = False) -> str:
         data = {"media_type": "STORIES"}
         if is_video:
@@ -96,7 +89,6 @@ class InstagramClient:
             self._wait_until_ready(creation_id)
         return self._publish_container(creation_id)
 
-    # ---------- Поиск музыки Instagram ----------
     def search_audio(self, query: str = "", audio_type: str = "music") -> list[dict]:
         params = {"audio_type": audio_type}
         if query:
@@ -104,7 +96,6 @@ class InstagramClient:
         result = self._get("ig_audio", params)
         return result.get("data", result.get("audio", []))
 
-    # ---------- Карусель (альбом из нескольких фото/видео) ----------
     def publish_carousel(self, media_urls: list[str], caption: str = "") -> str:
         item_ids = []
         for url in media_urls:
@@ -123,11 +114,9 @@ class InstagramClient:
             "caption": caption,
             "children": ",".join(item_ids),
         })
-        creation_id = container["id"]
-        return self._publish_container(creation_id)
+        return self._publish_container(container["id"])
 
     def _wait_until_ready(self, creation_id: str, timeout: int = 120):
-        """Видео обрабатывается асинхронно — ждём статус FINISHED."""
         start = time.time()
         while time.time() - start < timeout:
             status = self._get(creation_id, {"fields": "status_code"})
@@ -145,7 +134,6 @@ class InstagramClient:
         })
         return result["id"]
 
-    # ---------- Базовая статистика поста (без накрутки — реальные официальные метрики) ----------
     def get_media_insights(self, media_id: str) -> dict:
         return self._get(f"{media_id}/insights", {
             "metric": "impressions,reach,likes,comments,saved"
