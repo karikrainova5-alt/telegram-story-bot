@@ -255,7 +255,7 @@ async def cmd_newpost(message: Message, state: FSMContext):
         )
         return
 
-    await state.update_data(media_urls=[], media_type=None)
+    await state.update_data(media_urls=[], media_file_ids=[], media_type=None, audio_id=None, audio_title=None)
     await message.answer(
         "Пришли фото или видео для поста.\n"
         "Можно прислать несколько фото подряд — соберу карусель.\n"
@@ -275,14 +275,14 @@ async def newpost_add_photo(message: Message, state: FSMContext):
     data = await state.get_data()
     urls = data.get("media_urls", [])
     urls.append(url)
-    await state.update_data(media_urls=urls, media_type="photo" if len(urls) == 1 else "carousel")
+    file_ids = data.get("media_file_ids", [])\n    file_ids.append(message.photo[-1].file_id)\n    await state.update_data(media_urls=urls, media_file_ids=file_ids, media_type="photo" if len(urls) == 1 else "carousel")
     await message.answer(f"Добавлено фото ({len(urls)}). Ещё фото или /done.")
 
 
 @router.message(NewPostState.waiting_media, F.video)
 async def newpost_add_video(message: Message, state: FSMContext):
     url = await _file_public_url(message.video.file_id)
-    await state.update_data(media_urls=[url], media_type="video")
+    await state.update_data(media_urls=[url], media_file_ids=[message.video.file_id], media_type="video")
     await message.answer("Видео добавлено. Напиши /done чтобы продолжить.")
 
 
@@ -308,6 +308,93 @@ async def newpost_caption(message: Message, state: FSMContext):
     await _ask_schedule_choice(message, state)
 
 
+async def _ask_music_choice(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("media_type") != "video":
+        await _ask_schedule_choice(message, state)
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎵 Музыка Instagram", callback_data="music_instagram")],
+        [InlineKeyboardButton(text="🔇 Без музыки", callback_data="music_skip")],
+    ])
+    await message.answer("Добавить музыку к Reels?", reply_markup=kb)
+    await state.set_state(NewPostState.waiting_music_choice)
+
+
+@router.callback_query(NewPostState.waiting_music_choice, F.data == "music_skip")
+async def music_skip(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await _ask_schedule_choice(callback.message, state)
+
+
+@router.callback_query(NewPostState.waiting_music_choice, F.data == "music_instagram")
+async def music_instagram_start(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await callback.message.edit_text(
+        "🎵 Напиши название песни или исполнителя.\n"
+        "Если оставить пустой запрос, покажу доступные/популярные треки."
+    )
+    await state.set_state(NewPostState.waiting_music_query)
+
+
+@router.message(NewPostState.waiting_music_query)
+async def music_search(message: Message, state: FSMContext):
+    account = db.get_account(message.from_user.id)
+    if not account:
+        await message.answer("Сначала подключи Instagram: /connect")
+        return
+    try:
+        client = InstagramClient(account["ig_user_id"], account["access_token"], account.get("auth_type", "instagram"))
+        tracks = await asyncio.to_thread(client.search_audio, message.text.strip(), "music")
+    except Exception as e:
+        await message.answer(
+            f"❌ Не удалось получить музыку Instagram.\n{e}\n\n"
+            "Для музыки аккаунт должен быть подключён через Facebook Login."
+        )
+        return
+    if not tracks:
+        await message.answer("Ничего не нашла. Напиши другое название или исполнителя.")
+        return
+    tracks = tracks[:8]
+    await state.update_data(music_tracks=tracks)
+    buttons = []
+    for i, track in enumerate(tracks):
+        title = track.get("title") or track.get("name") or track.get("audio_name") or f"Трек {i+1}"
+        artist = track.get("artist") or track.get("artist_name") or track.get("username")
+        label = f"🎵 {title}"[:55]
+        if artist:
+            label = f"{label} — {artist}"[:60]
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"music_pick_{i}")])
+    buttons.append([InlineKeyboardButton(text="🔇 Без музыки", callback_data="music_skip")])
+    await message.answer("Выбери трек:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await state.set_state(NewPostState.waiting_music_choice)
+
+
+@router.callback_query(NewPostState.waiting_music_choice, F.data.startswith("music_pick_"))
+async def music_pick(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    data = await state.get_data()
+    try:
+        idx = int(callback.data.rsplit("_", 1)[1])
+        track = data["music_tracks"][idx]
+    except Exception:
+        await callback.message.answer("Трек устарел. Попробуй выбрать музыку ещё раз.")
+        return
+    audio_id = track.get("audio_id") or track.get("id")
+    title = track.get("title") or track.get("name") or track.get("audio_name") or "Instagram music"
+    if not audio_id:
+        await callback.message.answer("У этого трека Meta не вернула ID. Выбери другой.")
+        return
+    await state.update_data(audio_id=str(audio_id), audio_title=title)
+    await callback.message.edit_text(f"🎵 Выбрано: {title}\n\nКогда публикуем?")
+    await state.set_state(NewPostState.waiting_schedule_choice)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Опубликовать сейчас", callback_data="post_now")],
+        [InlineKeyboardButton(text="🕒 Запланировать", callback_data="post_schedule")],
+    ])
+    await callback.message.edit_reply_markup(reply_markup=kb)
+
+
 async def _ask_schedule_choice(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Опубликовать сейчас", callback_data="post_now")],
@@ -322,7 +409,7 @@ async def newpost_now(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await callback.message.edit_text("Публикую...")
     try:
-        await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""))
+        await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""), data.get("audio_id"))
     except Exception as e:
         await callback.message.answer(f"❌ Не удалось опубликовать: {e}")
         await state.clear()
@@ -429,11 +516,11 @@ async def cmd_cancel(message: Message):
 # ---------------------------------------------------------------------------
 # Публикация
 # ---------------------------------------------------------------------------
-async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], caption: str) -> str:
+async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], caption: str, audio_id: str | None = None) -> str:
     account = db.get_account(telegram_id)
     if not account:
         raise InstagramAPIError("Аккаунт не подключён")
-    client = InstagramClient(account["ig_user_id"], account["access_token"])
+    client = InstagramClient(account["ig_user_id"], account["access_token"], account.get("auth_type", "instagram"))
 
     if account.get("token_expires_at"):
         try:
@@ -455,7 +542,7 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
     if media_type == "photo":
         return client.publish_photo(media_urls[0], caption)
     elif media_type == "video":
-        return client.publish_video(media_urls[0], caption)
+        return client.publish_video(media_urls[0], caption, is_reel=True, audio_id=audio_id)
     elif media_type == "carousel":
         return client.publish_carousel(media_urls, caption)
     else:
