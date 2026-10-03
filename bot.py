@@ -394,7 +394,7 @@ async def music_search(message: Message, state: FSMContext):
         return
     try:
         client = InstagramClient(account["ig_user_id"], account["access_token"])
-        tracks = await asyncio.to_thread(client.search_audio, message.text.strip(), "music")
+        tracks = await asyncio.to_thread(client.search_audio, (message.text or "").strip(), "music")
     except Exception as e:
         await message.answer(
             f"❌ Не удалось получить музыку Instagram.\n{e}\n\n"
