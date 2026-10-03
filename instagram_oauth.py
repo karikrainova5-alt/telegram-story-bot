@@ -9,8 +9,9 @@ import database as db
 class OAuthServer:
     def __init__(self, bot):
         self.bot = bot
-        self.app_id = os.getenv("META_APP_ID")
-        self.app_secret = os.getenv("META_APP_SECRET")
+        self.app_id = os.getenv("META_FACEBOOK_APP_ID") or os.getenv("META_APP_ID")
+        self.app_secret = os.getenv("META_FACEBOOK_APP_SECRET") or os.getenv("META_APP_SECRET")
+        self.login_config_id = os.getenv("META_FACEBOOK_LOGIN_CONFIG_ID", "").strip()
         self.graph_version = os.getenv("META_GRAPH_API_VERSION", "v25.0")
         self.redirect_uri = os.getenv(
             "META_REDIRECT_URI",
@@ -27,14 +28,17 @@ class OAuthServer:
             "client_id": self.app_id,
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
-            "scope": ",".join([
+            "state": state,
+        }
+        if self.login_config_id:
+            params["config_id"] = self.login_config_id
+        else:
+            params["scope"] = ",".join([
                 "instagram_basic",
                 "instagram_content_publish",
                 "pages_show_list",
                 "pages_read_engagement",
-            ]),
-            "state": state,
-        }
+            ])
         return "https://www.facebook.com/" + self.graph_version + "/dialog/oauth?" + urlencode(params)
 
     async def start(self):
@@ -46,7 +50,11 @@ class OAuthServer:
         await web.TCPSite(runner, self.host, self.port).start()
 
     async def health(self, request):
-        return web.json_response({"ok": True, "oauth_configured": self.enabled})
+        return web.json_response({
+            "ok": True,
+            "oauth_configured": self.enabled,
+            "facebook_login_configured": bool(self.login_config_id),
+        })
 
     async def callback(self, request):
         code, state = request.query.get("code"), request.query.get("state")
