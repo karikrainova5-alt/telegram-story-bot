@@ -72,16 +72,37 @@ class InstagramClient:
         return self._publish_container(creation_id)
 
     # ---------- Публикация одиночного видео / Reels ----------
-    def publish_video(self, video_url: str, caption: str = "", is_reel: bool = True) -> str:
+    def publish_video(self, video_url: str, caption: str = "", is_reel: bool = True, audio_id: str | None = None) -> str:
         media_type = "REELS" if is_reel else "VIDEO"
-        container = self._post(f"{self.ig_user_id}/media", {
-            "video_url": video_url,
-            "caption": caption,
-            "media_type": media_type,
-        })
+        data = {"video_url": video_url, "caption": caption, "media_type": media_type}
+        if audio_id and is_reel:
+            data["audio_id"] = audio_id
+        container = self._post(f"{self.ig_user_id}/media", data)
         creation_id = container["id"]
         self._wait_until_ready(creation_id)
         return self._publish_container(creation_id)
+
+
+    # ---------- Публикация Stories ----------
+    def publish_story(self, media_url: str, is_video: bool = False) -> str:
+        data = {"media_type": "STORIES"}
+        if is_video:
+            data["video_url"] = media_url
+        else:
+            data["image_url"] = media_url
+        container = self._post(f"{self.ig_user_id}/media", data)
+        creation_id = container["id"]
+        if is_video:
+            self._wait_until_ready(creation_id)
+        return self._publish_container(creation_id)
+
+    # ---------- Поиск музыки Instagram ----------
+    def search_audio(self, query: str = "", audio_type: str = "music") -> list[dict]:
+        params = {"audio_type": audio_type}
+        if query:
+            params["search_query"] = query
+        result = self._get("ig_audio", params)
+        return result.get("data", result.get("audio", []))
 
     # ---------- Карусель (альбом из нескольких фото/видео) ----------
     def publish_carousel(self, media_urls: list[str], caption: str = "") -> str:
