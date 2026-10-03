@@ -67,6 +67,8 @@ class NewPostState(StatesGroup):
     waiting_caption = State()
     waiting_schedule_choice = State()
     waiting_datetime = State()
+    waiting_music_choice = State()
+    waiting_music_query = State()
 
 
 # ---------------------------------------------------------------------------
