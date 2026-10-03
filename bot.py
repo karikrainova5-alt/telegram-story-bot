@@ -589,7 +589,7 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
                         new_token,
                         (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
                     )
-                    client = InstagramClient(account["ig_user_id"], new_token)
+                    client = InstagramClient(account["ig_user_id"], new_token, account.get("auth_type", "instagram"))
         except Exception:
             logger.warning("Instagram token refresh failed; using current token", exc_info=True)
 
@@ -600,11 +600,11 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
     if publish_type == "reel":
         if media_type != "video":
             raise InstagramAPIError("Reels сейчас доступны для видео")
-        return client.publish_video(media_urls[0], caption, is_reel=True)
+        return client.publish_video(media_urls[0], caption, is_reel=True, audio_id=audio_id)
     if media_type == "photo":
         return client.publish_photo(media_urls[0], caption)
     elif media_type == "video":
-        return client.publish_video(media_urls[0], caption, is_reel=True)
+        return client.publish_video(media_urls[0], caption, is_reel=True, audio_id=audio_id)
     elif media_type == "carousel":
         return client.publish_carousel(media_urls, caption)
     else:
