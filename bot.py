@@ -393,7 +393,7 @@ async def music_search(message: Message, state: FSMContext):
         await message.answer("Сначала подключи Instagram: /connect")
         return
     try:
-        client = InstagramClient(account["ig_user_id"], account["access_token"])
+        client = InstagramClient(account["ig_user_id"], account["access_token"], account.get("auth_type", "instagram"))
         tracks = await asyncio.to_thread(client.search_audio, (message.text or "").strip(), "music")
     except Exception as e:
         await message.answer(
