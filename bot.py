@@ -344,13 +344,21 @@ async def choose_media_type(callback: CallbackQuery, state: FSMContext):
 @router.message(NewPostState.waiting_caption, Command("skip"))
 async def newpost_skip_caption(message: Message, state: FSMContext):
     await state.update_data(caption="")
-    await _ask_music_choice(message, state)
+    await _ask_music_or_schedule(message, state)
 
 
 @router.message(NewPostState.waiting_caption)
 async def newpost_caption(message: Message, state: FSMContext):
     await state.update_data(caption=message.text)
-    await _ask_music_choice(message, state)
+    await _ask_music_or_schedule(message, state)
+
+
+async def _ask_music_or_schedule(message: Message, state: FSMContext):
+    data = await state.get_data()
+    if data.get("publish_type") == "reel":
+        await _ask_music_choice(message, state)
+    else:
+        await _ask_schedule_choice(message, state)
 
 
 async def _ask_music_choice(message: Message, state: FSMContext):
@@ -512,6 +520,7 @@ async def newpost_datetime(message: Message, state: FSMContext):
         media_file_ids_json=json.dumps(data.get("media_file_ids", [])),
         audio_id=data.get("audio_id"),
         audio_title=data.get("audio_title"),
+        publish_type=data.get("publish_type", "post"),
     )
 
     access = db.get_access(message.from_user.id)
