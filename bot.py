@@ -299,13 +299,13 @@ async def newpost_media_done(message: Message, state: FSMContext):
 @router.message(NewPostState.waiting_caption, Command("skip"))
 async def newpost_skip_caption(message: Message, state: FSMContext):
     await state.update_data(caption="")
-    await _ask_schedule_choice(message, state)
+    await _ask_music_choice(message, state)
 
 
 @router.message(NewPostState.waiting_caption)
 async def newpost_caption(message: Message, state: FSMContext):
     await state.update_data(caption=message.text)
-    await _ask_schedule_choice(message, state)
+    await _ask_music_choice(message, state)
 
 
 async def _ask_music_choice(message: Message, state: FSMContext):
@@ -467,6 +467,9 @@ async def newpost_datetime(message: Message, state: FSMContext):
         media_urls_json=json.dumps(data["media_urls"]),
         caption=data.get("caption", ""),
         publish_at_iso=dt_utc.isoformat(),
+        media_file_ids_json=json.dumps(data.get("media_file_ids", [])),
+        audio_id=data.get("audio_id"),
+        audio_title=data.get("audio_title"),
     )
 
     access = db.get_access(message.from_user.id)
@@ -525,7 +528,7 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
     if account.get("token_expires_at"):
         try:
             expires_at = datetime.fromisoformat(account["token_expires_at"])
-            if expires_at - datetime.utcnow() < timedelta(days=30):
+            if account.get("auth_type", "instagram") == "instagram" and expires_at - datetime.utcnow() < timedelta(days=30):
                 refreshed = client.refresh_long_lived_token()
                 new_token = refreshed.get("access_token")
                 if new_token:
@@ -535,7 +538,7 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
                         new_token,
                         (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat(),
                     )
-                    client = InstagramClient(account["ig_user_id"], new_token)
+                    client = InstagramClient(account["ig_user_id"], new_token, account.get("auth_type", "instagram"))
         except Exception:
             logger.warning("Instagram token refresh failed; using current token", exc_info=True)
 
@@ -556,7 +559,12 @@ async def check_scheduled_posts():
     for post in due:
         try:
             media_urls = json.loads(post["media_urls"])
-            await _do_publish(post["telegram_id"], post["media_type"], media_urls, post["caption"])
+            if post.get("media_file_ids"):
+                file_ids = json.loads(post["media_file_ids"])
+                refreshed_urls = [await _file_public_url(file_id) for file_id in file_ids]
+                if refreshed_urls:
+                    media_urls = refreshed_urls
+            await _do_publish(post["telegram_id"], post["media_type"], media_urls, post["caption"], post.get("audio_id"))
             db.mark_post_done(post["id"])
             await bot.send_message(post["telegram_id"], f"✅ Пост #{post['id']} опубликован в Instagram.")
         except Exception as e:
