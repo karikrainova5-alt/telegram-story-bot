@@ -312,7 +312,32 @@ async def newpost_media_done(message: Message, state: FSMContext):
     if not data.get("media_urls"):
         await message.answer("Ты не прислал ни одного медиафайла.")
         return
-    await message.answer("Теперь пришли подпись (caption) к посту, или /skip чтобы оставить пустой.")
+    if len(data.get("media_urls", [])) > 1:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📸 Пост / карусель", callback_data="type_post")],
+            [InlineKeyboardButton(text="🎬 Reels", callback_data="type_reel")],
+        ])
+        await message.answer("Что публикуем?", reply_markup=kb)
+    else:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📸 Пост", callback_data="type_post")],
+            [InlineKeyboardButton(text="🎬 Reels", callback_data="type_reel")],
+            [InlineKeyboardButton(text="⭕ История", callback_data="type_story")],
+        ])
+        await message.answer("Что публикуем?", reply_markup=kb)
+    await state.set_state(NewPostState.waiting_caption)
+
+
+@router.callback_query(NewPostState.waiting_caption, F.data.startswith("type_"))
+async def choose_media_type(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    selected = callback.data.replace("type_", "")
+    await state.update_data(publish_type=selected)
+    await callback.message.edit_text("Тип публикации выбран: " + {
+        "post": "📸 Пост",
+        "reel": "🎬 Reels",
+        "story": "⭕ История",
+    }.get(selected, selected) + "\n\nТеперь пришли подпись к публикации или нажми /skip.")
     await state.set_state(NewPostState.waiting_caption)
 
 
@@ -329,8 +354,12 @@ async def newpost_caption(message: Message, state: FSMContext):
 
 
 async def _ask_music_choice(message: Message, state: FSMContext):
-    # Возвращаем прежний стабильный сценарий: после подписи сразу выбор публикации.
-    await _ask_schedule_choice(message, state)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎵 Добавить музыку Instagram", callback_data="music_instagram")],
+        [InlineKeyboardButton(text="🔇 Без музыки", callback_data="music_skip")],
+    ])
+    await message.answer("Добавить музыку?", reply_markup=kb)
+    await state.set_state(NewPostState.waiting_music_choice)
 
 
 @router.callback_query(NewPostState.waiting_music_choice, F.data == "music_skip")
@@ -421,7 +450,8 @@ async def newpost_now(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     await callback.message.edit_text("Публикую...")
     try:
-        await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""), data.get("audio_id"))
+        publish_type = data.get("publish_type", "reel" if data["media_type"] == "video" else "post")
+        await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""), data.get("audio_id"), publish_type)
     except Exception as e:
         await callback.message.answer(f"❌ Не удалось опубликовать: {e}")
         await state.clear()
@@ -531,7 +561,7 @@ async def cmd_cancel(message: Message):
 # ---------------------------------------------------------------------------
 # Публикация
 # ---------------------------------------------------------------------------
-async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], caption: str, audio_id: str | None = None) -> str:
+async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], caption: str, audio_id: str | None = None, publish_type: str = "post") -> str:
     account = db.get_account(telegram_id)
     if not account:
         raise InstagramAPIError("Аккаунт не подключён")
@@ -554,6 +584,14 @@ async def _do_publish(telegram_id: int, media_type: str, media_urls: list[str], 
         except Exception:
             logger.warning("Instagram token refresh failed; using current token", exc_info=True)
 
+    if publish_type == "story":
+        if len(media_urls) != 1:
+            raise InstagramAPIError("История поддерживает только одно фото или видео")
+        return client.publish_story(media_urls[0], media_type == "video")
+    if publish_type == "reel":
+        if media_type != "video":
+            raise InstagramAPIError("Reels сейчас доступны для видео")
+        return client.publish_video(media_urls[0], caption, is_reel=True)
     if media_type == "photo":
         return client.publish_photo(media_urls[0], caption)
     elif media_type == "video":
@@ -576,7 +614,7 @@ async def check_scheduled_posts():
                 refreshed_urls = [await _file_public_url(file_id) for file_id in file_ids]
                 if refreshed_urls:
                     media_urls = refreshed_urls
-            await _do_publish(post["telegram_id"], post["media_type"], media_urls, post["caption"], post.get("audio_id"))
+            await _do_publish(post["telegram_id"], post["media_type"], media_urls, post["caption"], post.get("audio_id"), post.get("publish_type", "post"))
             db.mark_post_done(post["id"])
             await bot.send_message(post["telegram_id"], f"✅ Пост #{post['id']} опубликован в Instagram.")
         except Exception as e:
