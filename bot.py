@@ -277,7 +277,6 @@ async def newpost_add_photo(message: Message, state: FSMContext):
     file_ids = data.get("media_file_ids", [])
     file_ids.append(message.photo[-1].file_id)
     await state.update_data(media_urls=urls, media_file_ids=file_ids, media_type="photo" if len(urls) == 1 else "carousel")
-    file_ids = data.get("media_file_ids", [])\n    file_ids.append(message.photo[-1].file_id)\n    await state.update_data(media_urls=urls, media_file_ids=file_ids, media_type="photo" if len(urls) == 1 else "carousel")
     await message.answer(f"Добавлено фото ({len(urls)}). Ещё фото или /done.")
 
 
