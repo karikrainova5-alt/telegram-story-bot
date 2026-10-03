@@ -31,7 +31,8 @@ def init_db():
             created_at      TEXT NOT NULL,
             media_file_ids  TEXT,
             audio_id        TEXT,
-            audio_title     TEXT
+            audio_title     TEXT,
+            publish_type    TEXT NOT NULL DEFAULT 'post'
         );
 
         CREATE TABLE IF NOT EXISTS user_access (
@@ -56,6 +57,7 @@ def init_db():
             "ALTER TABLE scheduled_posts ADD COLUMN media_file_ids TEXT",
             "ALTER TABLE scheduled_posts ADD COLUMN audio_id TEXT",
             "ALTER TABLE scheduled_posts ADD COLUMN audio_title TEXT",
+            "ALTER TABLE scheduled_posts ADD COLUMN publish_type TEXT NOT NULL DEFAULT 'post'",
         ]:
             try:
                 conn.execute(sql)
@@ -138,14 +140,15 @@ def add_scheduled_post(
     media_file_ids_json: str | None = None,
     audio_id: str | None = None,
     audio_title: str | None = None,
+    publish_type: str = "post",
 ) -> int:
     with get_conn() as conn:
         cur = conn.execute("""
             INSERT INTO scheduled_posts (
                 telegram_id, media_type, media_urls, caption, publish_at,
-                created_at, media_file_ids, audio_id, audio_title
+                created_at, media_file_ids, audio_id, audio_title, publish_type
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             telegram_id,
             media_type,
@@ -156,6 +159,7 @@ def add_scheduled_post(
             media_file_ids_json,
             audio_id,
             audio_title,
+            publish_type,
         ))
         return cur.lastrowid
 
