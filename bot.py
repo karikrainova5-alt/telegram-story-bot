@@ -74,6 +74,11 @@ class NewPostState(StatesGroup):
 # ---------------------------------------------------------------------------
 # /start и справка
 # ---------------------------------------------------------------------------
+@router.message(Command("myid"))
+async def cmd_myid(message: Message):
+    await message.answer(f"Твой Telegram ID: {message.from_user.id}")
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     access = db.get_access(message.from_user.id)
