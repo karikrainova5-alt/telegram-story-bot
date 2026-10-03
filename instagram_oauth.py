@@ -23,12 +23,10 @@ class OAuthServer:
             "client_id": self.app_id,
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
-            "scope": "pages_show_list,instagram_basic,instagram_content_publish,pages_read_engagement",
+            "scope": "instagram_business_basic,instagram_business_content_publish,instagram_business_manage_comments,instagram_business_manage_messages",
             "state": state,
         }
-        version = os.getenv("META_GRAPH_API_VERSION", "v25.0")
-        return "https://www.facebook.com/" + version + "/dialog/oauth?" + urlencode(params)
-
+        return "https://www.instagram.com/oauth/authorize?" + urlencode(params)
 
     async def start(self):
         app = web.Application()
@@ -52,70 +50,47 @@ class OAuthServer:
         if not row:
             return web.Response(status=400, text="Ссылка устарела или уже использована.")
         telegram_id = row["telegram_id"]
-        version = os.getenv("META_GRAPH_API_VERSION", "v25.0")
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"https://graph.facebook.com/{version}/oauth/access_token", params={
+                async with session.post("https://api.instagram.com/oauth/access_token", data={
                     "client_id": self.app_id, "client_secret": self.app_secret,
-                    "redirect_uri": self.redirect_uri, "code": code,
+                    "grant_type": "authorization_code", "redirect_uri": self.redirect_uri,
+                    "code": code,
                 }, timeout=30) as r:
                     short = await r.json()
                     if r.status >= 400 or "access_token" not in short:
                         raise RuntimeError(short)
 
-                async with session.get(f"https://graph.facebook.com/{version}/oauth/access_token", params={
-                    "grant_type": "fb_exchange_token",
-                    "client_id": self.app_id,
-                    "client_secret": self.app_secret,
-                    "fb_exchange_token": short["access_token"],
+                async with session.get("https://graph.instagram.com/access_token", params={
+                    "grant_type": "ig_exchange_token", "client_secret": self.app_secret,
+                    "access_token": short["access_token"],
                 }, timeout=30) as r:
                     long = await r.json()
                     if r.status >= 400 or "access_token" not in long:
                         raise RuntimeError(long)
 
-                user_token = long["access_token"]
+                token = long["access_token"]
                 expires_in = int(long.get("expires_in", 60 * 24 * 3600))
-
-                async with session.get(f"https://graph.facebook.com/{version}/me/accounts", params={
-                    "fields": "id,name,access_token,instagram_business_account",
-                    "access_token": user_token,
-                }, timeout=30) as r:
-                    pages = await r.json()
-                    if r.status >= 400:
-                        raise RuntimeError(pages)
-
-                page = next((p for p in pages.get("data", []) if p.get("instagram_business_account", {}).get("id")), None)
-                if not page:
-                    raise RuntimeError("Не найдена Facebook Page с подключённым Instagram Business/Creator.")
-
-                ig_user_id = page["instagram_business_account"]["id"]
-                page_token = page["access_token"]
-
-                async with session.get(f"https://graph.facebook.com/{version}/{ig_user_id}", params={
-                    "fields": "id,username,name",
-                    "access_token": page_token,
+                async with session.get("https://graph.instagram.com/me", params={
+                    "fields": "user_id,username,name", "access_token": token
                 }, timeout=30) as r:
                     info = await r.json()
                     if r.status >= 400 or "id" not in info:
                         raise RuntimeError(info)
 
             expires_at = (datetime.utcnow() + timedelta(seconds=expires_in)).isoformat()
-            db.save_account(telegram_id, info["id"], page_token, info.get("username", "?"), expires_at, "facebook")
+            db.save_account(telegram_id, info["id"], token, info.get("username", "?"), expires_at)
             await self.bot.send_message(
                 telegram_id,
                 f"✅ Instagram подключён: @{info.get('username', '?')}\n"
-                "Подключение через Facebook Login. Теперь доступны Reels и поиск музыки Instagram.\n"
-                "Можно использовать /newpost."
+                "Данные подключения сохранены. Теперь /newpost."
             )
             return web.Response(content_type="text/html",
                 text="<h2>Instagram подключён ✅</h2><p>Можно закрыть окно и вернуться в Telegram.</p>")
-        except Exception as exc:
-            logger = os.getenv("LOG_LEVEL", "INFO")
+        except Exception:
             await self.bot.send_message(
                 telegram_id,
-                "❌ Не удалось подключить Instagram через Facebook.\n"
-                f"Причина: {exc}\n\n"
-                "Проверь, что Instagram — Business/Creator и привязан к Facebook Page."
+                "❌ Meta не завершила подключение. Попробуй /connect ещё раз."
             )
-            return web.Response(status=400, text="Не удалось подключить Instagram.");
+            return web.Response(status=400, text="Не удалось подключить Instagram.")
