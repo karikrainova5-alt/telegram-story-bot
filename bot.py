@@ -15,6 +15,8 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
+import tempfile
 from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -285,6 +287,38 @@ async def _file_public_url(file_id: str) -> str:
     file = await bot.get_file(file_id)
     return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
+async def _photo_to_reel_video(photo_file_id: str, chat_id: int) -> tuple[str, str]:
+    """Create a short vertical MP4 from a Telegram photo."""
+    source_url = await _file_public_url(photo_file_id)
+    with tempfile.TemporaryDirectory() as tmp:
+        output_path = os.path.join(tmp, "reel.mp4")
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-loop", "1", "-i", source_url,
+            "-t", "5",
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
+            "-r", "30", "-c:v", "libx264", "-preset", "veryfast",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", output_path,
+        ]
+        try:
+            await asyncio.to_thread(subprocess.run, cmd, check=True, timeout=90)
+        except FileNotFoundError:
+            raise InstagramAPIError("На сервере не установлен ffmpeg")
+        except subprocess.CalledProcessError as e:
+            raise InstagramAPIError(f"Не удалось создать видео из фото (ffmpeg): {e}")
+        except subprocess.TimeoutExpired:
+            raise InstagramAPIError("Создание Reel из фото заняло слишком много времени")
+
+        with open(output_path, "rb") as video_file:
+            msg = await bot.send_document(chat_id=chat_id, document=video_file)
+        file_id = msg.document.file_id
+        public_url = await _file_public_url(file_id)
+        try:
+            await bot.delete_message(chat_id, msg.message_id)
+        except Exception:
+            logger.warning("Could not delete temporary Telegram video message", exc_info=True)
+        return file_id, public_url
+
 
 @router.message(NewPostState.waiting_media, F.photo)
 async def newpost_add_photo(message: Message, state: FSMContext):
@@ -459,7 +493,13 @@ async def newpost_now(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Публикую...")
     try:
         publish_type = data.get("publish_type", "reel" if data["media_type"] == "video" else "post")
-        await _do_publish(callback.from_user.id, data["media_type"], data["media_urls"], data.get("caption", ""), data.get("audio_id"), publish_type)
+        media_type = data["media_type"]
+        media_urls = data["media_urls"]
+        if publish_type == "reel" and media_type == "photo":
+            _, video_url = await _photo_to_reel_video(data["media_file_ids"][0], callback.message.chat.id)
+            media_type = "video"
+            media_urls = [video_url]
+        await _do_publish(callback.from_user.id, media_type, media_urls, data.get("caption", ""), data.get("audio_id"), publish_type)
     except Exception as e:
         await callback.message.answer(f"❌ Не удалось опубликовать: {e}")
         await state.clear()
@@ -511,16 +551,26 @@ async def newpost_datetime(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
+    scheduled_media_type = data["media_type"]
+    scheduled_media_urls = data["media_urls"]
+    scheduled_file_ids = data.get("media_file_ids", [])
+    publish_type = data.get("publish_type", "post")
+    if publish_type == "reel" and scheduled_media_type == "photo":
+        video_file_id, video_url = await _photo_to_reel_video(scheduled_file_ids[0], message.chat.id)
+        scheduled_media_type = "video"
+        scheduled_media_urls = [video_url]
+        scheduled_file_ids = [video_file_id]
+
     post_id = db.add_scheduled_post(
         telegram_id=message.from_user.id,
-        media_type=data["media_type"],
-        media_urls_json=json.dumps(data["media_urls"]),
+        media_type=scheduled_media_type,
+        media_urls_json=json.dumps(scheduled_media_urls),
         caption=data.get("caption", ""),
         publish_at_iso=dt_utc.isoformat(),
-        media_file_ids_json=json.dumps(data.get("media_file_ids", [])),
+        media_file_ids_json=json.dumps(scheduled_file_ids),
         audio_id=data.get("audio_id"),
         audio_title=data.get("audio_title"),
-        publish_type=data.get("publish_type", "post"),
+        publish_type=publish_type,
     )
 
     access = db.get_access(message.from_user.id)
