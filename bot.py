@@ -489,6 +489,7 @@ async def _ask_schedule_choice(message: Message, state: FSMContext):
 
 @router.callback_query(NewPostState.waiting_schedule_choice, F.data == "post_now")
 async def newpost_now(callback: CallbackQuery, state: FSMContext):
+    await callback.answer("Публикую…")
     data = await state.get_data()
     await callback.message.edit_text("Публикую...")
     try:
@@ -528,6 +529,7 @@ async def buy_subscription_callback(callback: CallbackQuery):
 
 @router.callback_query(NewPostState.waiting_schedule_choice, F.data == "post_schedule")
 async def newpost_schedule(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
     await callback.message.edit_text(
         "Пришли дату и время публикации в формате:\n"
         "ДД.ММ.ГГГГ ЧЧ:ММ\n"
