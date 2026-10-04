@@ -6,6 +6,7 @@ import aiohttp
 from aiohttp import web
 import database as db
 
+
 class OAuthServer:
     def __init__(self, bot):
         self.bot = bot
@@ -80,7 +81,7 @@ class OAuthServer:
                 }, timeout=30) as r:
                     short = await r.json()
                     if r.status >= 400 or "access_token" not in short:
-                        raise RuntimeError(short)
+                        raise RuntimeError(f"Ошибка обмена code: {short}")
 
                 async with session.get(f"{graph}/oauth/access_token", params={
                     "grant_type": "fb_exchange_token",
@@ -90,29 +91,67 @@ class OAuthServer:
                 }, timeout=30) as r:
                     long = await r.json()
                     if r.status >= 400 or "access_token" not in long:
-                        raise RuntimeError(long)
+                        raise RuntimeError(f"Ошибка получения long-lived token: {long}")
 
                 user_token = long["access_token"]
                 expires_in = int(long.get("expires_in", 60 * 24 * 3600))
 
+                # First get Pages with their Page access tokens.
+                # Do not rely on a nested instagram_business_account field:
+                # Meta can omit that field even when the Page is connected
+                # to Instagram in Business Settings.
                 async with session.get(f"{graph}/me/accounts", params={
-                    "fields": "id,name,access_token,instagram_business_account{id,username}",
+                    "fields": "id,name,access_token",
                     "access_token": user_token,
                 }, timeout=30) as r:
                     pages = await r.json()
                     if r.status >= 400 or "data" not in pages:
-                        raise RuntimeError(pages)
+                        raise RuntimeError(f"Ошибка получения Facebook Pages: {pages}")
+
+                page_candidates = pages.get("data", [])
+                if not page_candidates:
+                    async with session.get(f"{graph}/me", params={
+                        "fields": "id,name",
+                        "access_token": user_token,
+                    }, timeout=30) as r:
+                        me = await r.json()
+                    raise RuntimeError(
+                        "Meta вернула 0 Facebook Pages для этого пользователя. "
+                        f"Пользователь Meta: {me}. "
+                        "Проверь Full control над Page и разрешение pages_show_list."
+                    )
 
                 selected = None
-                for page in pages["data"]:
-                    ig = page.get("instagram_business_account")
+                checked_pages = []
+
+                # Query each Page directly using its Page access token.
+                for page in page_candidates:
+                    page_id = page.get("id")
+                    page_token = page.get("access_token")
+                    if not page_id or not page_token:
+                        continue
+
+                    async with session.get(f"{graph}/{page_id}", params={
+                        "fields": "id,name,instagram_business_account{id,username}",
+                        "access_token": page_token,
+                    }, timeout=30) as r:
+                        page_info = await r.json()
+
+                    checked_pages.append({
+                        "id": page_id,
+                        "name": page.get("name"),
+                        "instagram_business_account": page_info.get("instagram_business_account"),
+                    })
+
+                    ig = page_info.get("instagram_business_account")
                     if ig and ig.get("id"):
                         selected = (page, ig)
                         break
 
                 if not selected:
                     raise RuntimeError(
-                        "Не найдена Facebook Page с подключённым Instagram Business/Creator аккаунтом."
+                        "Meta вернула Facebook Pages, но ни одна не содержит instagram_business_account. "
+                        f"Проверенные Pages: {checked_pages}"
                     )
 
                 page, ig = selected
@@ -143,6 +182,6 @@ class OAuthServer:
             await self.bot.send_message(
                 telegram_id,
                 f"❌ Meta не завершила подключение.\n{e}\n\n"
-                "Проверь, что Instagram Business/Creator привязан к Facebook Page, и попробуй /connect ещё раз."
+                "Теперь бот показывает точную причину и данные Pages, которые вернула Meta."
             )
             return web.Response(status=400, text="Не удалось подключить Instagram через Facebook.")
