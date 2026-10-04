@@ -288,29 +288,41 @@ async def _file_public_url(file_id: str) -> str:
     return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
 async def _photo_to_reel_video(photo_file_id: str, chat_id: int) -> tuple[str, str]:
-    """Create a lightweight vertical MP4 from a Telegram photo.
+    """Create a small local MP4 from a Telegram photo for an Instagram Reel.
 
-    Keep the encode intentionally small for Railway memory limits. Instagram
-    only needs a valid video container; the music is attached by audio_id.
+    Download the source first instead of making ffmpeg read the remote Telegram
+    URL. This is faster and much more reliable on Railway.
     """
-    source_url = await _file_public_url(photo_file_id)
     with tempfile.TemporaryDirectory() as tmp:
+        source_path = os.path.join(tmp, "source.jpg")
         output_path = os.path.join(tmp, "reel.mp4")
+
+        try:
+            tg_file = await bot.get_file(photo_file_id)
+            await bot.download_file(tg_file.file_path, destination=source_path)
+        except Exception as e:
+            raise InstagramAPIError(f"Не удалось скачать фото из Telegram: {e}")
+
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
             "-threads", "1",
-            "-loop", "1", "-i", source_url,
-            "-t", "4",
-            "-vf", "scale=720:1280:force_original_aspect_ratio=increase,"
-                    "crop=720:1280,setsar=1",
-            "-r", "24",
+            "-loop", "1", "-i", source_path,
+            "-t", "3",
+            "-vf", "scale=540:960:force_original_aspect_ratio=increase,"
+                    "crop=540:960,setsar=1",
+            "-r", "20",
             "-c:v", "libx264", "-preset", "ultrafast",
-            "-crf", "30",
+            "-crf", "32",
             "-pix_fmt", "yuv420p",
             "-an", "-movflags", "+faststart", output_path,
         ]
         try:
-            await asyncio.to_thread(subprocess.run, cmd, check=True, timeout=60)
+            await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                check=True,
+                timeout=45,
+            )
         except FileNotFoundError:
             raise InstagramAPIError("На сервере не установлен ffmpeg")
         except subprocess.CalledProcessError as e:
@@ -318,8 +330,12 @@ async def _photo_to_reel_video(photo_file_id: str, chat_id: int) -> tuple[str, s
         except subprocess.TimeoutExpired:
             raise InstagramAPIError("Создание Reel из фото заняло слишком много времени")
 
-        with open(output_path, "rb") as video_file:
-            msg = await bot.send_document(chat_id=chat_id, document=video_file)
+        try:
+            with open(output_path, "rb") as video_file:
+                msg = await bot.send_document(chat_id=chat_id, document=video_file)
+        except Exception as e:
+            raise InstagramAPIError(f"Не удалось загрузить готовое видео в Telegram: {e}")
+
         file_id = msg.document.file_id
         public_url = await _file_public_url(file_id)
         try:
@@ -327,7 +343,6 @@ async def _photo_to_reel_video(photo_file_id: str, chat_id: int) -> tuple[str, s
         except Exception:
             logger.warning("Could not delete temporary Telegram video message", exc_info=True)
         return file_id, public_url
-
 
 @router.message(NewPostState.waiting_media, F.photo)
 async def newpost_add_photo(message: Message, state: FSMContext):
