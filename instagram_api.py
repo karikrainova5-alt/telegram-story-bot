@@ -90,7 +90,11 @@ class InstagramClient:
         return self._publish_container(creation_id)
 
     def search_audio(self, query: str = "", audio_type: str = "music") -> list[dict]:
-        params = {"audio_type": audio_type}
+        # Instagram Audio API requires the connected IG user ID explicitly.
+        params = {
+            "ig_user_id": self.ig_user_id,
+            "audio_type": audio_type,
+        }
         if query:
             params["search_query"] = query
         result = self._get("ig_audio", params)
