@@ -288,20 +288,29 @@ async def _file_public_url(file_id: str) -> str:
     return f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
 
 async def _photo_to_reel_video(photo_file_id: str, chat_id: int) -> tuple[str, str]:
-    """Create a short vertical MP4 from a Telegram photo."""
+    """Create a lightweight vertical MP4 from a Telegram photo.
+
+    Keep the encode intentionally small for Railway memory limits. Instagram
+    only needs a valid video container; the music is attached by audio_id.
+    """
     source_url = await _file_public_url(photo_file_id)
     with tempfile.TemporaryDirectory() as tmp:
         output_path = os.path.join(tmp, "reel.mp4")
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
+            "-threads", "1",
             "-loop", "1", "-i", source_url,
-            "-t", "5",
-            "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
-            "-r", "30", "-c:v", "libx264", "-preset", "veryfast",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", output_path,
+            "-t", "4",
+            "-vf", "scale=720:1280:force_original_aspect_ratio=increase,"
+                    "crop=720:1280,setsar=1",
+            "-r", "24",
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-crf", "30",
+            "-pix_fmt", "yuv420p",
+            "-an", "-movflags", "+faststart", output_path,
         ]
         try:
-            await asyncio.to_thread(subprocess.run, cmd, check=True, timeout=90)
+            await asyncio.to_thread(subprocess.run, cmd, check=True, timeout=60)
         except FileNotFoundError:
             raise InstagramAPIError("На сервере не установлен ffmpeg")
         except subprocess.CalledProcessError as e:
