@@ -26,7 +26,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    LabeledPrice, PreCheckoutQuery,
+    LabeledPrice, PreCheckoutQuery, FSInputFile,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
@@ -332,7 +332,7 @@ async def _photo_to_reel_video(photo_file_id: str, chat_id: int) -> tuple[str, s
 
         try:
             with open(output_path, "rb") as video_file:
-                msg = await bot.send_document(chat_id=chat_id, document=video_file)
+                msg = await bot.send_document(chat_id=chat_id, document=FSInputFile(output_path, filename="reel.mp4"))
         except Exception as e:
             raise InstagramAPIError(f"Не удалось загрузить готовое видео в Telegram: {e}")
 
